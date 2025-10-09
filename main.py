@@ -29,11 +29,14 @@ from tqdm import tqdm
 
 import thop
 from copy import deepcopy
+from multiprocessing import Pool
+import multiprocessing as mp
+import torch
+import gc
 
 import resource
 rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (2048, rlimit[1]))
-import apex
 
 def init_seed(seed):
     torch.cuda.manual_seed_all(seed)
@@ -41,8 +44,8 @@ def init_seed(seed):
     np.random.seed(seed)
     random.seed(seed)
 #     torch.backends.cudnn.enabled = True
-#     torch.backends.cudnn.deterministic = True
-#     torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = True
 
 def get_current_timestamp():
     ct = time.time()
@@ -63,7 +66,6 @@ def get_parser():
 
     parser.add_argument(
         '--work-dir',
-        default='./work_dir/temp',
         help='the work folder for storing results')
     parser.add_argument('-model_saved_name', default='')
     parser.add_argument(
@@ -82,7 +84,7 @@ def get_parser():
 
     # visulize and debug
     parser.add_argument(
-        '--seed', type=int, default=1, help='random seed for pytorch')
+        '--seed', type=int, default=None, help='random seed for pytorch')
     parser.add_argument(
         '--log-interval',
         type=int,
@@ -194,10 +196,11 @@ def get_parser():
         '--cosine_epoch', 
         type=int, 
         default=0)
+    parser.add_argument('--overwrite', action='store_true', default=False)
     parser.add_argument(
-        '--half', 
-        type=str2bool, 
-        default=True)
+        '--num_models', type=int, default=1)
+    parser.add_argument(
+        '--num_workers', type=int, default=1)
     return parser
 
 
@@ -235,13 +238,17 @@ class Processor():
             if not arg.train_feeder_args['debug']:
                 arg.model_saved_name = os.path.join(arg.work_dir, 'runs')
                 if os.path.isdir(arg.model_saved_name):
-                    print('log_dir: ', arg.model_saved_name, 'already exist')
-                    answer = input('delete it? y/n:')
-                    if answer == 'y':
-                        shutil.rmtree(arg.model_saved_name)
-                        print('Dir removed: ', arg.model_saved_name)
+                    
+                    if not self.arg.overwrite:
+                        print('log_dir: ', arg.model_saved_name, 'already exist')
+                        answer = input('delete it? y/n:')
+                        if answer == 'y':
+                            shutil.rmtree(arg.model_saved_name)
+                            print('Dir removed: ', arg.model_saved_name)
+                        else:
+                            print('Dir not removed: ', arg.model_saved_name)
                     else:
-                        print('Dir not removed: ', arg.model_saved_name)
+                        shutil.rmtree(arg.model_saved_name)
                 self.train_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'train'), 'train')
                 self.val_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'val'), 'val')
             else:
@@ -260,20 +267,12 @@ class Processor():
         self.best_acc = 0
         self.best_acc_epoch = 0
 
-        if self.arg.half:
-            self.print_log('Use Half Traning!')
-            self.model, self.optimizer = apex.amp.initialize(
-                self.model,
-                self.optimizer,
-                opt_level='O1'
-            )
-        else:
-            if type(self.arg.device) is list:
-                if len(self.arg.device) > 1:
-                    self.model = nn.DataParallel(
-                        self.model,
-                        device_ids=self.arg.device,
-                        output_device=self.output_device)
+        if type(self.arg.device) is list:
+            if len(self.arg.device) > 1:
+                self.model = nn.DataParallel(
+                    self.model,
+                    device_ids=self.arg.device,
+                    output_device=self.output_device)
         
 
     def load_data(self):
@@ -405,6 +404,8 @@ class Processor():
                 lr = self.arg.base_lr * (0.1 ** np.sum(epoch >= np.array(self.arg.step)))
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = lr
+            
+            print("\nLearning rate: ", lr, "\n")
             return lr
         else:
             raise ValueError()
@@ -459,11 +460,7 @@ class Processor():
 
             # backward
             self.optimizer.zero_grad()
-            if self.arg.half:
-                with apex.amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                loss.backward()
+            loss.backward()
             self.optimizer.step()
 
             loss_value.append(loss.data.item())
@@ -578,11 +575,12 @@ class Processor():
 
     def start(self):
         if self.arg.phase == 'train':
+            self.print_log('seed: {}'.format(self.arg.seed))
             self.print_log('Modelargs:\n{}\n'.format(str(vars(self.arg))))
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
-            self.data_shape = [1, 3, self.arg.train_feeder_args['window_size'], self.arg.model_args['num_point'], 2]
-            flops, params = thop.profile(import_class(self.arg.model)(**self.arg.model_args), inputs=torch.rand([1] + self.data_shape), verbose=False)
-            self.print_log('Model profile: {:.2f}G FLOPs and {:.2f}M Parameters'.format(flops / 1e9, params / 1e6))
+            # self.data_shape = [1, 3, self.arg.train_feeder_args['window_size'], self.arg.model_args['num_point'], 2]
+            # flops, params = thop.profile(import_class(self.arg.model)(**self.arg.model_args), inputs=torch.rand([1] + self.data_shape), verbose=False)
+            # self.print_log('Model profile: {:.2f}G FLOPs and {:.2f}M Parameters'.format(flops / 1e9, params / 1e6))
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
                 self.print_log('*'*100)
                 save_model = (((epoch + 1) % self.arg.save_interval == 0) or (
@@ -590,10 +588,7 @@ class Processor():
 
                 self.train(epoch, save_model=save_model)
                 
-                if epoch > self.arg.num_epoch-20:
-                    self.eval(epoch, save_score=self.arg.save_score, loader_name=['test'])
-                elif epoch%5==0:
-                    self.eval(epoch, save_score=self.arg.save_score, loader_name=['test'])
+                self.eval(epoch, save_score=self.arg.save_score, loader_name=['test'])
                 self.print_log('Best_Accuracy: {:.2f}%, epoch: {}'.format(self.best_acc*100, self.best_acc_epoch))
 
             # test the best model
@@ -621,7 +616,6 @@ class Processor():
             self.print_log('Base LR: {}'.format(self.arg.base_lr))
             self.print_log('Batch Size: {}'.format(self.arg.batch_size))
             self.print_log('Test Batch Size: {}'.format(self.arg.test_batch_size))
-            self.print_log('seed: {}'.format(self.arg.seed))
 
         elif self.arg.phase == 'test':
             wf = self.arg.weights.replace('.pt', '_wrong.txt')
@@ -651,6 +645,27 @@ def import_class(import_str):
         return getattr(sys.modules[mod_str], class_str)
     except AttributeError:
         raise ImportError('Class %s cannot be found (%s)' % (class_str, traceback.format_exception(*sys.exc_info())))
+    
+
+def run_wrapper(kwargs):
+    arg = kwargs['arg']
+    base_workdir = kwargs['base_workdir']
+    id_model = kwargs['id_model']
+
+    arg.work_dir = os.path.join(base_workdir, f'model_{id_model}')
+    if arg.seed is None:
+        arg.seed = np.random.randint(2**31)
+    init_seed(arg.seed)
+    print("########################################################################")
+    print(f"#                            ROUND {id_model}                                 #")
+    print("########################################################################")
+    processor = Processor(arg) 
+    processor.start()
+
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+
 
 if __name__ == '__main__':
     warnings.filterwarnings("ignore")
@@ -670,6 +685,15 @@ if __name__ == '__main__':
         parser.set_defaults(**default_arg)
 
     arg = parser.parse_args()
-    init_seed(arg.seed)
-    processor = Processor(arg) 
-    processor.start()
+
+    num_models = arg.num_models
+    base_workdir = arg.work_dir
+    num_workers = arg.num_workers
+
+    # ================= sequential ==================
+    # for id_model in range(num_models):
+    #     run_wrapper(dict(arg=arg, base_workdir=base_workdir, id_model=id_model))
+    # ================= parallel ====================
+    mp.set_start_method("spawn", force=True)
+    with Pool(num_workers) as p:
+        p.map(run_wrapper, [dict(arg=arg, base_workdir=base_workdir, id_model=id_model) for id_model in range(num_models)])

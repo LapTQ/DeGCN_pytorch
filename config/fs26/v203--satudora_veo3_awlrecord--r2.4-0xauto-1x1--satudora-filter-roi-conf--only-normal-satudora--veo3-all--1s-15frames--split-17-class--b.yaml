@@ -1,0 +1,52 @@
+work_dir: outputs/train/fs26/v203--satudora_veo3_awlrecord--r2.4-0xauto-1x1--satudora-filter-roi-conf--only-normal-satudora--veo3-all--1s-15frames--split-17-class--b
+
+num_models: 10
+num_workers: 5
+
+# feeder
+feeder: feeders.feeder_from_protogcn_format.Feeder
+train_feeder_args:
+  data_path: /home/laptq/laptq-fs26-shoplifting-detection/outputs/convert_pkl_STGCN_to_ProtoGCN/fs26/satudora_veo3_awlrecord--r2.4-0xauto-1x1--satudora-filter-roi-conf--only-normal-satudora--veo3-all--1s-15frames--split-17-class/train.pkl
+  layout: "coco_onlyhand"
+  split: train
+  random_rot: False
+  debug: False
+  class_map: null
+  ske_feat: "b"
+
+test_feeder_args:
+  data_path: /home/laptq/laptq-fs26-shoplifting-detection/outputs/convert_pkl_STGCN_to_ProtoGCN/fs26/shoplift25min_satudoraR9--r1-0x1-1x3--1s-15frames/val.pkl
+  layout: "coco_onlyhand"
+  split: val
+  class_map: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+  ske_feat: "b"
+
+# model
+model: model.degcn.Model
+model_args:
+  num_class: 17
+  num_point: 6
+  num_person: 1
+  base_frame: 15
+  graph: graph.coco_onlyhand.Graph
+  in_channels: 2
+  k: 8
+  eta: 4
+  num_stream: 2
+  graph_args:
+    labeling_mode: 'spatial'
+
+
+#optim
+weight_decay: 0.0004
+base_lr: 0.1
+step: [10, 20, 30, 40]
+warm_up_epoch: 2
+cosine_epoch: 15
+
+# training
+device: [0]
+batch_size: 64
+test_batch_size: 64
+num_epoch: 50
+nesterov: True

@@ -36,7 +36,7 @@ class DeGCN(nn.Sequential):
             
 
 class Model(nn.Module):
-    def __init__(self, num_class=60, num_point=25, num_person=2, k=8, eta=4, num_stream=2, 
+    def __init__(self, num_class=60, num_point=25, num_person=2, base_frame=64, k=8, eta=4, num_stream=2, 
                  graph=None, graph_args=dict(), in_channels=3, drop_out=0,):
         super(Model, self).__init__()
 
@@ -53,7 +53,6 @@ class Model(nn.Module):
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
 
         base_channel = 64
-        base_frame = 64
         
         self.blockargs = [
             [in_channels, base_channel, 1, False, base_frame, num_point],

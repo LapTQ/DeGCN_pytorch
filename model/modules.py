@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 
 LEAKY_ALPHA = 0.1
@@ -222,7 +223,7 @@ class DeTGC(nn.Module):
     def forward(self, x):
         res = x
         N, C, T, V = x.size()
-        Tout = T // self.stride
+        Tout = math.ceil(T / self.stride)
         dtype = x.dtype 
         
         #learnable sampling locations
@@ -303,9 +304,9 @@ class Basic_Block(nn.Module):
         
         num_scale = 4
         scale_channels = out_channels // num_scale
-        self.num_scale = num_scale if in_channels !=3 else 1
+        self.num_scale = num_scale if in_channels > 3 else 1
         
-        if in_channels == 3:
+        if in_channels <= 3:
             self.gcn = ST_GC(in_channels, out_channels, A)
         else:
             # self.gcn = DeSGC(in_channels, 
