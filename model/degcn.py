@@ -81,7 +81,17 @@ class Model(nn.Module):
             self.drop_out = lambda x: x
         
     
-    def forward(self, x):
+    def forward(self, x): 
+        out = []
+        feats = self.extract_feat(x)
+        for feat, fc in zip(feats, self.fc):
+            x = self.drop_out(feat)
+            out.append(fc(x))
+
+        return out
+    
+
+    def extract_feat(self, x):
         if len(x.shape) == 3:
             N, T, VC = x.shape
             x = x.view(N, T, self.num_point, -1).permute(0, 3, 1, 2).contiguous().unsqueeze(-1)
@@ -93,13 +103,12 @@ class Model(nn.Module):
         
         x_ = x  
         out = []
-        for stream, fc in zip(self.streams, self.fc):
+        for stream in self.streams:
             x = x_
             x = stream(x)
             c_new = x.size(1)
             x = x.view(N, M, c_new, -1)
             x = x.mean(3).mean(1)
-            x = self.drop_out(x)
-            out.append(fc(x))
+            out.append(x)
 
         return out
