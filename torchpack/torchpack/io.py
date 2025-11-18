@@ -4,7 +4,7 @@ from collections import OrderedDict
 import torch
 from torch.nn.parallel import DataParallel, DistributedDataParallel
 from torch.utils import model_zoo
-from torchvision.models.resnet import model_urls
+# from torchvision.models.resnet import model_urls
 
 
 def load_state_dict(module, state_dict, strict=False, logger=None):
